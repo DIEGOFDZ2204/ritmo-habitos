@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown,
-  CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Plus, Sparkles,
+  CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Moon, Plus, Sparkles, Sun,
   Trash2, X,
 } from 'lucide-react'
 
@@ -14,8 +14,10 @@ type Habit = {
 }
 type Store = { habits: Habit[] }
 type View = 'today' | 'week' | 'month' | 'habits'
+type Theme = 'dark' | 'light'
 
 const STORAGE_KEY = 'ritmo-habitos-v1'
+const THEME_KEY = 'ritmo-theme'
 const weekdays = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 
@@ -44,6 +46,9 @@ function readStore(): Store {
     if (value) return JSON.parse(value) as Store
   } catch { /* Recover gracefully from invalid local data. */ }
   return { habits: [] }
+}
+function readTheme(): Theme {
+  try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark' } catch { return 'dark' }
 }
 function shortDate(date: Date) {
   return new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(date).replace('.', '')
@@ -83,6 +88,7 @@ function periodStats(habits: Habit[], dates: Date[]) {
 export default function App() {
   const [store, setStore] = useState<Store>(readStore)
   const [view, setView] = useState<View>('today')
+  const [theme, setTheme] = useState<Theme>(readTheme)
   const [selectedDate, setSelectedDate] = useState(() => new Date())
   const [filterId, setFilterId] = useState('all')
   const [modal, setModal] = useState<'add' | 'edit' | 'delete' | null>(null)
@@ -100,6 +106,12 @@ export default function App() {
   const completion = todayTotals.total ? Math.round(todayTotals.done / todayTotals.total * 100) : 0
   const streaks = activeHabits.map(habit => currentStreak(habit, today))
   const bestStreak = Math.max(0, ...streaks)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#171d19' : '#f8f8f5')
+    try { localStorage.setItem(THEME_KEY, theme) } catch { /* Theme still applies for this session. */ }
+  }, [theme])
 
   function persist(habits: Habit[]) {
     const next = { habits }
@@ -196,7 +208,7 @@ export default function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">Mi espacio <span>/</span> <strong>{view === 'today' ? 'Hoy' : view === 'week' ? 'Semana' : view === 'month' ? 'Mes' : 'Mis hábitos'}</strong></div>
-          <div className="topbar-date"><span className="online-dot" /> Guardado en tu dispositivo</div>
+          <div className="topbar-actions"><button className="theme-toggle" type="button" onClick={() => setTheme(value => value === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'} title={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}<span>{theme === 'dark' ? 'Oscuro' : 'Claro'}</span></button><div className="topbar-date"><span className="online-dot" /> Guardado en tu dispositivo</div></div>
         </header>
 
         <div className="content-wrap">
