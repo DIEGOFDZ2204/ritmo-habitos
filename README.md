@@ -6,11 +6,14 @@ Las tareas incluyen fecha y hora. En Pendientes puedes conectar Google Calendar 
 
 ## Conectar Google Calendar
 
-1. En Google Cloud Console, crea un proyecto, habilita **Google Calendar API** y configura la pantalla de consentimiento OAuth como **Externa**. Para uso personal, deja la app en modo de prueba y añade tu cuenta Google como usuario de prueba.
-2. Crea un cliente OAuth de tipo **Aplicación web**. Añade como origen JavaScript autorizado `https://diegofdz2204.github.io` (y `http://localhost:5173` para desarrollo). No hace falta URL de redirección: Ritmo usa el flujo de token del navegador.
-3. En Ritmo → **Pendientes**, pega el ID público de cliente OAuth (termina en `apps.googleusercontent.com`), guárdalo y pulsa **Conectar Google Calendar**. Después de autorizar, usa el icono de calendario de una tarea para crearla.
+1. En [Google Cloud Console](https://console.cloud.google.com/), crea un proyecto o selecciona uno y habilita **Google Calendar API** desde **APIs y servicios → Biblioteca**.
+2. Abre **Google Auth Platform → Branding** y configura el nombre de la app y el correo de soporte. En **Audience**, elige **External** para una cuenta personal de Gmail, deja la publicación en **Testing** y añade tu propia cuenta como usuario de prueba. En **Data Access**, añade el ámbito `https://www.googleapis.com/auth/calendar.events`.
+3. En **Google Auth Platform → Clients → Create client**, elige **Web application**. En **Authorized JavaScript origins**, añade `https://diegofdz2204.github.io` y, solo para desarrollo local, `http://localhost:5173`. Introduce solo los orígenes, sin rutas como `/ritmo-habitos/`; este flujo de navegador no necesita redirect URI.
+4. Copia el **Client ID** (termina en `apps.googleusercontent.com`) y pégalo en Ritmo → **Pendientes → ID de cliente OAuth web**. Guarda el ID y pulsa **Conectar Google Calendar**. Cuando autorices tu cuenta, el icono de calendario de cada tarea creará un evento.
 
-El permiso solicitado es `calendar.events`. Un proyecto personal en pruebas solo permite autorizar a sus usuarios de prueba. Para distribuir el acceso OAuth al público general, Google exige verificación de la aplicación y un dominio propio verificado; un subdominio compartido de GitHub Pages puede no cumplir ese requisito. Consulta la [política de privacidad](https://diegofdz2204.github.io/ritmo-habitos/privacy.html) antes de publicar acceso para otros usuarios.
+El Client ID es público y la app no necesita el *client secret*. En el modo **Testing**, Google limita el acceso a las cuentas de prueba y puede pedir que autorices de nuevo cada siete días. Al crear el evento, Ritmo envía a Google solo el título y el horario de la tarea elegida; los hábitos, tareas e historial siguen guardados localmente.
+
+Para distribuir la conexión OAuth al público general, Google exige verificar la aplicación y los dominios asociados; el subdominio compartido de GitHub Pages puede no servir como dominio propio verificable. En ese caso, usa un dominio personalizado y configura sus orígenes en el cliente OAuth. Consulta la [política de privacidad](https://diegofdz2204.github.io/ritmo-habitos/privacy.html).
 
 El APK usa una WebView: Google no permite autorizar OAuth dentro de ese navegador integrado. En Android, abre Ritmo en Chrome para usar la conexión directa; el APK conserva el formulario que prepara el evento para guardarlo manualmente. En iPhone, usa Safari.
 
