@@ -256,8 +256,9 @@ export default function App() {
       setCalendarMessage(clientId ? 'ID de cliente guardado en este dispositivo.' : 'Se ha quitado el ID de cliente.')
     } catch { setCalendarMessage('No se pudo guardar la configuración en este dispositivo.') }
   }
-  function requestCalendarAccess(onAccess: (accessToken: string) => void) {
-    if (!googleClientId.trim()) {
+  function requestCalendarAccess(onAccess: (accessToken: string) => void, clientId = googleClientId) {
+    const configuredClientId = clientId.trim()
+    if (!configuredClientId) {
       setCalendarMessage('Añade primero el ID de cliente OAuth de tu proyecto de Google Cloud.')
       return
     }
@@ -271,7 +272,7 @@ export default function App() {
       return
     }
     const client = oauth.initTokenClient({
-      client_id: googleClientId.trim(),
+      client_id: configuredClientId,
       scope: CALENDAR_SCOPE,
       callback: response => {
         if (response.error || !response.access_token) {
@@ -287,8 +288,9 @@ export default function App() {
     client.requestAccessToken({ prompt: 'select_account' })
   }
   function connectCalendar() {
+    const clientId = googleClientId.trim()
     saveGoogleClientId()
-    requestCalendarAccess(() => setCalendarMessage('Google Calendar conectado en esta sesión.'))
+    requestCalendarAccess(() => setCalendarMessage('Google Calendar conectado en esta sesión.'), clientId)
   }
   function disconnectCalendar() {
     const oauth = window.google?.accounts.oauth2
