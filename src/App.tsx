@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown,
-  CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Moon, Plus, Sparkles, Sun,
+  CalendarDays, CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Moon, Plus, Sparkles, Sun,
   Trash2, X,
 } from 'lucide-react'
 
@@ -11,9 +11,12 @@ type Habit = {
   createdAt: string
   archivedAt?: string
   completedDates: string[]
+  kind?: 'build' | 'avoid'
+  lapseDates?: string[]
 }
-type Store = { habits: Habit[] }
-type View = 'today' | 'week' | 'month' | 'habits'
+type Task = { id: string; title: string; dueDate: string; dueTime?: string; done: boolean; createdAt: string }
+type Store = { habits: Habit[]; tasks: Task[] }
+type View = 'today' | 'week' | 'month' | 'habits' | 'tasks' | 'recovery'
 type Theme = 'dark' | 'light'
 
 const STORAGE_KEY = 'ritmo-habitos-v1'
@@ -43,9 +46,12 @@ function sameDay(a: Date, b: Date) { return dateKey(a) === dateKey(b) }
 function readStore(): Store {
   try {
     const value = localStorage.getItem(STORAGE_KEY)
-    if (value) return JSON.parse(value) as Store
+  if (value) {
+    const parsed = JSON.parse(value) as Partial<Store>
+    return { habits: (parsed.habits ?? []).map(habit => ({ kind: 'build', lapseDates: [], ...habit })), tasks: parsed.tasks ?? [] }
+  }
   } catch { /* Recover gracefully from invalid local data. */ }
-  return { habits: [] }
+  return { habits: [], tasks: [] }
 }
 function readTheme(): Theme {
   try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark' } catch { return 'dark' }
@@ -61,7 +67,7 @@ function expectedOn(habit: Habit, date: Date) {
   return key >= habit.createdAt && (!habit.archivedAt || key <= habit.archivedAt)
 }
 function dayTotals(habits: Habit[], date: Date) {
-  const eligible = habits.filter(habit => expectedOn(habit, date))
+  const eligible = habits.filter(habit => habit.kind !== 'avoid' && expectedOn(habit, date))
   return { total: eligible.length, done: eligible.filter(habit => habit.completedDates.includes(dateKey(date))).length }
 }
 function currentStreak(habit: Habit, today: Date) {
@@ -94,17 +100,24 @@ export default function App() {
   const [modal, setModal] = useState<'add' | 'edit' | 'delete' | null>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [habitName, setHabitName] = useState('')
+  const [habitKind, setHabitKind] = useState<'build' | 'avoid'>('build')
+  const [taskTitle, setTaskTitle] = useState('')
+  const [taskDueDate, setTaskDueDate] = useState(dateKey(new Date()))
+  const [taskDueTime, setTaskDueTime] = useState('09:00')
   const [showArchived, setShowArchived] = useState(false)
   const [toast, setToast] = useState('')
   const today = useMemo(() => new Date(), [])
   const todayKey = dateKey(today)
   const activeHabits = store.habits.filter(habit => !habit.archivedAt)
+  const buildHabits = activeHabits.filter(habit => habit.kind !== 'avoid')
+  const avoidHabits = activeHabits.filter(habit => habit.kind === 'avoid')
+  const openTasks = store.tasks.filter(task => !task.done).sort((a, b) => a.dueDate.localeCompare(b.dueDate))
   const archivedHabits = store.habits.filter(habit => habit.archivedAt)
-  const visibleHabits = filterId === 'all' ? activeHabits : activeHabits.filter(habit => habit.id === filterId)
+  const visibleHabits = filterId === 'all' ? buildHabits : buildHabits.filter(habit => habit.id === filterId)
   const selectedHabit = store.habits.find(habit => habit.id === activeId)
-  const todayTotals = dayTotals(activeHabits, selectedDate)
+  const todayTotals = dayTotals(buildHabits, selectedDate)
   const completion = todayTotals.total ? Math.round(todayTotals.done / todayTotals.total * 100) : 0
-  const streaks = activeHabits.map(habit => currentStreak(habit, today))
+  const streaks = buildHabits.map(habit => currentStreak(habit, today))
   const bestStreak = Math.max(0, ...streaks)
 
   useEffect(() => {
@@ -114,7 +127,9 @@ export default function App() {
   }, [theme])
 
   function persist(habits: Habit[]) {
-    const next = { habits }
+    persistStore({ ...store, habits })
+  }
+  function persistStore(next: Store) {
     setStore(next)
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)) } catch {
       notify('No se pudo guardar en este dispositivo.')
@@ -124,18 +139,18 @@ export default function App() {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
   }
-  function openAdd() { setHabitName(''); setActiveId(null); setModal('add') }
-  function openEdit(habit: Habit) { setHabitName(habit.name); setActiveId(habit.id); setModal('edit') }
+  function openAdd(kind: 'build' | 'avoid' = 'build') { setHabitName(''); setHabitKind(kind); setActiveId(null); setModal('add') }
+  function openEdit(habit: Habit) { setHabitName(habit.name); setHabitKind(habit.kind ?? 'build'); setActiveId(habit.id); setModal('edit') }
   function saveHabit(event: React.FormEvent) {
     event.preventDefault()
     const name = habitName.trim()
     if (!name) return
     if (modal === 'edit' && activeId) {
-      persist(store.habits.map(habit => habit.id === activeId ? { ...habit, name } : habit))
+      persist(store.habits.map(habit => habit.id === activeId ? { ...habit, name, kind: habitKind } : habit))
       notify('Hábito actualizado')
     } else {
-      persist([{ id: crypto.randomUUID(), name, createdAt: dateKey(new Date()), completedDates: [] }, ...store.habits])
-      notify('Nuevo hábito creado')
+      persist([{ id: crypto.randomUUID(), name, kind: habitKind, createdAt: dateKey(new Date()), completedDates: [], lapseDates: [] }, ...store.habits])
+      notify(habitKind === 'avoid' ? 'Seguimiento creado' : 'Nuevo hábito creado')
     }
     setModal(null)
   }
@@ -161,6 +176,44 @@ export default function App() {
     setActiveId(null)
     notify('Hábito e historial eliminados')
   }
+  function addTask(event: React.FormEvent) {
+    event.preventDefault()
+    const title = taskTitle.trim()
+    if (!title) return
+    persistStore({ ...store, tasks: [{ id: crypto.randomUUID(), title, dueDate: taskDueDate || todayKey, dueTime: taskDueTime || '09:00', done: false, createdAt: todayKey }, ...store.tasks] })
+    setTaskTitle('')
+    notify('Tarea guardada')
+  }
+  function updateTask(task: Task, changes: Partial<Task>) { persistStore({ ...store, tasks: store.tasks.map(item => item.id === task.id ? { ...item, ...changes } : item) }) }
+  function removeTask(task: Task) { persistStore({ ...store, tasks: store.tasks.filter(item => item.id !== task.id) }) }
+  function recordLapse(habit: Habit) {
+    const lapseDates = habit.lapseDates ?? []
+    if (lapseDates.includes(todayKey)) return
+    persist(store.habits.map(item => item.id === habit.id ? { ...item, lapseDates: [...lapseDates, todayKey] } : item))
+    notify('Día registrado. Mañana puedes volver a empezar.')
+  }
+  function undoLapse(habit: Habit) { persist(store.habits.map(item => item.id === habit.id ? { ...item, lapseDates: (item.lapseDates ?? []).filter(date => date !== todayKey) } : item)) }
+  function cleanDays(habit: Habit) {
+    const last = [...(habit.lapseDates ?? [])].sort().at(-1)
+    const from = last ? shiftDate(parseKey(last), 1) : parseKey(habit.createdAt)
+    return Math.max(0, Math.floor((new Date(todayKey).getTime() - new Date(dateKey(from)).getTime()) / 86400000))
+  }
+  function cleanHistory(habit: Habit) {
+    let start = parseKey(habit.createdAt)
+    return [...(habit.lapseDates ?? [])].sort().map(date => {
+      const end = parseKey(date)
+      const days = Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86400000))
+      start = shiftDate(end, 1)
+      return { date, days }
+    })
+  }
+  function calendarLink(task: Task) {
+    const start = new Date(`${task.dueDate}T${task.dueTime || '09:00'}:00`)
+    const end = new Date(start.getTime() + 30 * 60000)
+    const format = (date: Date) => `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}T${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}00`
+    const params = new URLSearchParams({ action: 'TEMPLATE', text: task.title, dates: `${format(start)}/${format(end)}`, ctz: Intl.DateTimeFormat().resolvedOptions().timeZone, details: 'Creado desde Ritmo' })
+    return `https://calendar.google.com/calendar/render?${params}`
+  }
   function shiftPeriod(amount: number) {
     if (view === 'week') setSelectedDate(date => shiftDate(date, amount * 7))
     else setSelectedDate(date => new Date(date.getFullYear(), date.getMonth() + amount, 1))
@@ -179,7 +232,7 @@ export default function App() {
   const monthStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)
   const monthLength = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0).getDate()
   const monthDates = Array.from({ length: monthLength }, (_, index) => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), index + 1))
-  const summaryHabits = filterId === 'all' ? store.habits : store.habits.filter(habit => habit.id === filterId)
+  const summaryHabits = filterId === 'all' ? store.habits.filter(habit => habit.kind !== 'avoid') : store.habits.filter(habit => habit.id === filterId && habit.kind !== 'avoid')
   const summaryDates = view === 'week' ? weekDates.filter(date => dateKey(date) <= todayKey) : monthDates.filter(date => dateKey(date) <= todayKey)
   const summary = periodStats(summaryHabits, summaryDates)
   const displayedDates = view === 'week' ? weekDates : monthDates
@@ -195,9 +248,11 @@ export default function App() {
         <p className="nav-caption">TU ESPACIO</p>
         <nav className="side-nav" aria-label="Navegación principal">
           <NavButton active={view === 'today'} icon={<CheckCheck size={18} />} label="Hoy" onClick={() => switchView('today')} />
+          <NavButton active={view === 'tasks'} icon={<ListChecks size={18} />} label="Pendientes" onClick={() => switchView('tasks')} />
           <NavButton active={view === 'week'} icon={<ListChecks size={18} />} label="Semana" onClick={() => switchView('week')} />
           <NavButton active={view === 'month'} icon={<span className="calendar-icon">▦</span>} label="Mes" onClick={() => switchView('month')} />
           <NavButton active={view === 'habits'} icon={<Leaf size={18} />} label="Mis hábitos" onClick={() => switchView('habits')} />
+          <NavButton active={view === 'recovery'} icon={<Flame size={18} />} label="Días limpios" onClick={() => switchView('recovery')} />
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note"><Sparkles size={17} /><span>Los pequeños pasos también cuentan.</span></div>
@@ -207,7 +262,7 @@ export default function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumb">Mi espacio <span>/</span> <strong>{view === 'today' ? 'Hoy' : view === 'week' ? 'Semana' : view === 'month' ? 'Mes' : 'Mis hábitos'}</strong></div>
+          <div className="breadcrumb">Mi espacio <span>/</span> <strong>{view === 'today' ? 'Hoy' : view === 'week' ? 'Semana' : view === 'month' ? 'Mes' : view === 'tasks' ? 'Pendientes' : view === 'recovery' ? 'Días limpios' : 'Mis hábitos'}</strong></div>
           <div className="topbar-actions"><button className="theme-toggle" type="button" onClick={() => setTheme(value => value === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'} title={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}<span>{theme === 'dark' ? 'Oscuro' : 'Claro'}</span></button><div className="topbar-date"><span className="online-dot" /> Guardado en tu dispositivo</div></div>
         </header>
 
@@ -215,11 +270,11 @@ export default function App() {
           {view === 'today' && <>
             <section className="greeting-row">
               <div><p className="eyebrow">{longDate(selectedDate)}</p><h1>{dateTitle === 'Hoy' ? 'Un día a tu ritmo' : `Tu día, ${dateTitle}`}</h1><p className="subtitle">Un poco de constancia cambia mucho. ¿Qué te gustaría cuidar hoy?</p></div>
-              <button className="button-primary add-top" onClick={openAdd}><Plus size={17} /> Nuevo hábito</button>
+              <button className="button-primary add-top" onClick={() => openAdd('build')}><Plus size={17} /> Nuevo hábito</button>
             </section>
             <section className="overview-grid">
               <div className="progress-card">
-                <div className="progress-copy"><span className="card-kicker">TU PROGRESO DE HOY</span><div className="progress-number">{todayTotals.done}<span> / {todayTotals.total}</span></div><p>{doneLabel}{todayTotals.total ? ` · ${completion}% completado` : ' · empieza con un hábito sencillo'}</p></div>
+                <div className="progress-copy"><span className="card-kicker">TUS HÁBITOS DE HOY</span><div className="progress-number">{todayTotals.done}<span> / {todayTotals.total}</span></div><p>{doneLabel}{todayTotals.total ? ` · ${completion}% completado` : ' · empieza con un hábito sencillo'}</p></div>
                 <div className="ring" style={{ '--progress': `${completion}%` } as React.CSSProperties}><div><strong>{completion}<small>%</small></strong><span>completado</span></div></div>
                 <div className="leaf-decoration leaf-one">✳</div><div className="leaf-decoration leaf-two">✳</div>
               </div>
@@ -227,9 +282,11 @@ export default function App() {
             </section>
             <section className="habits-section">
               <div className="section-heading"><div><h2>Mis hábitos</h2><p>{selectedDate.toDateString() === today.toDateString() ? 'Cada pequeño check es un paso hacia ti.' : 'Consulta o actualiza el registro de este día.'}</p></div><button className="text-button" onClick={() => switchView('habits')}>Ver todos <ArrowRight size={15} /></button></div>
-              {activeHabits.length === 0 ? <EmptyState onAdd={openAdd} /> : <div className="habit-list">{visibleHabits.map((habit, index) => <HabitRow key={habit.id} habit={habit} index={index} date={selectedDate} today={today} onToggle={toggleHabit} onEdit={openEdit} onArchive={archiveHabit} />)}</div>}
-              {activeHabits.length > 0 && <button className="add-habit-row" onClick={openAdd}><span><Plus size={17} /></span> Añadir otro hábito</button>}
+              {buildHabits.length === 0 ? <EmptyState onAdd={() => openAdd('build')} /> : <div className="habit-list">{visibleHabits.map((habit, index) => <HabitRow key={habit.id} habit={habit} index={index} date={selectedDate} today={today} onToggle={toggleHabit} onEdit={openEdit} onArchive={archiveHabit} />)}</div>}
+              {buildHabits.length > 0 && <button className="add-habit-row" onClick={() => openAdd('build')}><span><Plus size={17} /></span> Añadir otro hábito</button>}
             </section>
+            <TaskPanel tasks={openTasks} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: true })} onRemove={removeTask} calendarLink={calendarLink} compact />
+            {avoidHabits.length > 0 && <section className="focus-card"><div><span className="card-kicker">CUIDARTE TAMBIÉN ES AVANZAR</span><h2>{avoidHabits.length} seguimiento{avoidHabits.length === 1 ? '' : 's'} de días limpios</h2><p>Tu progreso está en Días limpios.</p></div><button className="button-quiet" onClick={() => switchView('recovery')}>Ver progreso <ArrowRight size={15} /></button></section>}
             <section className="week-preview"><div className="section-heading compact"><div><h2>Esta semana</h2><p>Tu ritmo, día a día</p></div><button className="text-button" onClick={() => switchView('week')}>Ver resumen <ArrowRight size={15} /></button></div><div className="week-strip">{weekDates.map((date, index) => { const total = dayTotals(activeHabits, date); const pct = total.total ? total.done / total.total * 100 : 0; return <button className={`week-day ${sameDay(date, today) ? 'is-today' : ''} ${dateKey(date) > todayKey ? 'future' : ''}`} key={index} onClick={() => setSelectedDate(date)}><span>{weekdays[index]}</span><strong>{date.getDate()}</strong><i><b style={{ width: `${pct}%` }} /></i></button> })}</div></section>
           </>}
 
@@ -241,19 +298,23 @@ export default function App() {
             <section className="detail-card"><div className="section-heading"><div><h2>Progreso por hábito</h2><p>Un vistazo a cada uno de tus hábitos</p></div></div>{summaryHabits.length ? <div className="habit-progress-list">{summaryHabits.map((habit, index) => { const dates = displayedDates.filter(date => dateKey(date) <= todayKey && expectedOn(habit, date)); const done = dates.filter(date => habit.completedDates.includes(dateKey(date))).length; const percent = dates.length ? Math.round(done / dates.length * 100) : 0; const streak = currentStreak(habit, today); return <div className="habit-progress-row" key={habit.id}><span className={`habit-mini-icon color-${index % 5}`}><Leaf size={16} /></span><div className="habit-progress-name"><strong>{habit.name}</strong><span>{done} de {dates.length} días</span></div><div className="habit-progress-meter"><i style={{ width: `${percent}%` }} /></div><strong className="habit-progress-pct">{percent}%</strong>{streak > 0 && <span className="mini-streak"><Flame size={13} />{streak}</span>}</div> })}</div> : <div className="empty-inline">Todavía no hay hábitos en este periodo.</div>}</section>
           </>}
 
+          {view === 'tasks' && <><section className="greeting-row"><div><p className="eyebrow">UN PASO A LA VEZ</p><h1>Tus tareas pendientes</h1><p className="subtitle">Saca las cosas de tu cabeza y ponlas en un lugar tranquilo.</p></div></section><TaskPanel tasks={store.tasks.slice().sort((a, b) => Number(a.done) - Number(b.done) || a.dueDate.localeCompare(b.dueDate))} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: !task.done })} onRemove={removeTask} calendarLink={calendarLink} /></>}
+
+          {view === 'recovery' && <><section className="greeting-row"><div><p className="eyebrow">SIN CULPA, UN DÍA A LA VEZ</p><h1>Días limpios</h1><p className="subtitle">Registra el tiempo desde tu último consumo o conducta. Un tropiezo no borra lo que has avanzado.</p></div><button className="button-primary add-top" onClick={() => openAdd('avoid')}><Plus size={17} /> Nuevo seguimiento</button></section><div className="recovery-intro"><Flame size={19} /><span>El contador se reinicia al registrar un día y conserva las rachas anteriores en tu historial.</span></div>{avoidHabits.length ? <div className="recovery-list">{avoidHabits.map(habit => { const days = cleanDays(habit); const lapsedToday = (habit.lapseDates ?? []).includes(todayKey); const lastLapse = [...(habit.lapseDates ?? [])].sort().at(-1); const history = cleanHistory(habit); return <article className="recovery-card" key={habit.id}><div className="recovery-card-top"><div><span className="card-kicker">SEGUIMIENTO</span><h2>{habit.name}</h2></div><div className="recovery-days"><strong>{days}</strong><span>{days === 1 ? 'día limpio' : 'días limpios'}</span></div></div><div className="recovery-meta">{lastLapse ? `Último reinicio: ${shortDate(parseKey(lastLapse))}` : `Desde ${shortDate(parseKey(habit.createdAt))}`} · {history.length} reinicios registrados</div>{history.length > 0 && <details className="recovery-history"><summary>Ver rachas anteriores</summary><ul>{history.slice().reverse().map(item => <li key={item.date}>{item.days} {item.days === 1 ? 'día limpio' : 'días limpios'} hasta el {shortDate(parseKey(item.date))}</li>)}</ul></details>}<div className="recovery-actions"><button className="button-danger" onClick={() => recordLapse(habit)} disabled={lapsedToday}>{lapsedToday ? 'Día registrado' : 'Registrar un tropiezo'}</button>{lapsedToday && <button className="button-quiet" onClick={() => undoLapse(habit)}>Deshacer</button>}<button className="icon-action" aria-label={`Editar ${habit.name}`} onClick={() => openEdit(habit)}><MoreHorizontal size={18} /></button><button className="icon-action" aria-label={`Archivar ${habit.name}`} onClick={() => archiveHabit(habit)}><Archive size={16} /></button><button className="icon-action delete-action" aria-label={`Eliminar ${habit.name} y su historial`} onClick={() => { setActiveId(habit.id); setModal('delete') }}><Trash2 size={15} /></button></div></article>})}</div> : <div className="empty-state"><div className="empty-illustration"><Flame size={25} /></div><h3>Un espacio para empezar cuando tú quieras</h3><p>Elige un hábito que quieras dejar y empezaremos a contar los días.</p><button className="button-primary" onClick={() => openAdd('avoid')}><Plus size={16} /> Crear seguimiento</button></div>}</>}
+
           {view === 'habits' && <>
-            <section className="greeting-row"><div><p className="eyebrow">TU ESPACIO PERSONAL</p><h1>Hábitos que te hacen bien</h1><p className="subtitle">No se trata de hacerlo perfecto, sino de hacerlo tuyo.</p></div><button className="button-primary add-top" onClick={openAdd}><Plus size={17} /> Nuevo hábito</button></section>
-            <div className="manage-stat-row"><div><span className="manage-stat-icon"><Leaf size={17} /></span><strong>{activeHabits.length}</strong><span>hábitos activos</span></div><div><span className="manage-stat-icon archive"><Archive size={17} /></span><strong>{archivedHabits.length}</strong><span>en pausa</span></div><div className="manage-message"><Sparkles size={17} /><span>Un hábito pequeño puede cambiar un día entero.</span></div></div>
-            <section className="habits-section manage-section"><div className="section-heading"><div><h2>En tu rutina</h2><p>Los hábitos que te acompañan cada día.</p></div></div>{activeHabits.length ? <div className="manage-list">{activeHabits.map((habit, index) => <ManageRow key={habit.id} habit={habit} index={index} onEdit={openEdit} onArchive={archiveHabit} onDelete={item => { setActiveId(item.id); setModal('delete') }} />)}</div> : <EmptyState onAdd={openAdd} />}</section>
+            <section className="greeting-row"><div><p className="eyebrow">TU ESPACIO PERSONAL</p><h1>Hábitos que te hacen bien</h1><p className="subtitle">No se trata de hacerlo perfecto, sino de hacerlo tuyo.</p></div><button className="button-primary add-top" onClick={() => openAdd('build')}><Plus size={17} /> Nuevo hábito</button></section>
+            <div className="manage-stat-row"><div><span className="manage-stat-icon"><Leaf size={17} /></span><strong>{buildHabits.length}</strong><span>hábitos activos</span></div><div><span className="manage-stat-icon archive"><Archive size={17} /></span><strong>{archivedHabits.length}</strong><span>en pausa</span></div><div className="manage-message"><Sparkles size={17} /><span>Un hábito pequeño puede cambiar un día entero.</span></div></div>
+            <section className="habits-section manage-section"><div className="section-heading"><div><h2>En tu rutina</h2><p>Los hábitos que te acompañan cada día.</p></div></div>{buildHabits.length ? <div className="manage-list">{buildHabits.map((habit, index) => <ManageRow key={habit.id} habit={habit} index={index} onEdit={openEdit} onArchive={archiveHabit} onDelete={item => { setActiveId(item.id); setModal('delete') }} />)}</div> : <EmptyState onAdd={() => openAdd('build')} />}</section>
             {archivedHabits.length > 0 && <section className="archived-section"><button className="archive-toggle" onClick={() => setShowArchived(!showArchived)}><Archive size={17} /><span>Hábitos archivados</span><span className="archive-count">{archivedHabits.length}</span><ChevronDown className={showArchived ? 'rotated' : ''} size={17} /></button>{showArchived && <div className="manage-list archived-list">{archivedHabits.map((habit, index) => <ManageRow key={habit.id} habit={habit} index={index} archived onEdit={openEdit} onArchive={reactivateHabit} onDelete={item => { setActiveId(item.id); setModal('delete') }} />)}</div>}</section>}
-            <aside className="privacy-note"><CircleHelp size={17} /><p><strong>Tus datos son solo tuyos.</strong> Los hábitos y registros se guardan en este dispositivo. Nadie más puede verlos.</p></aside>
+            <aside className="privacy-note"><CircleHelp size={17} /><p><strong>Tus datos son solo tuyos.</strong> Hábitos, tareas y seguimientos se guardan en este dispositivo. Nadie más puede verlos.</p></aside>
           </>}
         </div>
       </main>
 
-      <nav className="mobile-nav" aria-label="Navegación principal"><NavButton active={view === 'today'} icon={<CheckCheck size={20} />} label="Hoy" onClick={() => switchView('today')} /><NavButton active={view === 'week'} icon={<ListChecks size={20} />} label="Semana" onClick={() => switchView('week')} /><NavButton active={view === 'month'} icon={<span className="calendar-icon">▦</span>} label="Mes" onClick={() => switchView('month')} /><NavButton active={view === 'habits'} icon={<Leaf size={20} />} label="Hábitos" onClick={() => switchView('habits')} /></nav>
+      <nav className="mobile-nav" aria-label="Navegación principal"><NavButton active={view === 'today'} icon={<CheckCheck size={20} />} label="Hoy" onClick={() => switchView('today')} /><NavButton active={view === 'tasks'} icon={<ListChecks size={20} />} label="Tareas" onClick={() => switchView('tasks')} /><NavButton active={view === 'week'} icon={<CalendarDays size={20} />} label="Semana" onClick={() => switchView('week')} /><NavButton active={view === 'month'} icon={<span className="calendar-icon">▦</span>} label="Mes" onClick={() => switchView('month')} /><NavButton active={view === 'habits'} icon={<Leaf size={20} />} label="Hábitos" onClick={() => switchView('habits')} /><NavButton active={view === 'recovery'} icon={<Flame size={20} />} label="Limpio" onClick={() => switchView('recovery')} /></nav>
 
-      {modal && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setModal(null) }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" aria-label="Cerrar" onClick={() => setModal(null)}><X size={18} /></button>{modal === 'delete' ? <><div className="modal-icon danger"><Trash2 size={20} /></div><p className="eyebrow">ELIMINAR HÁBITO</p><h2 id="modal-title">¿Eliminar «{selectedHabit?.name}»?</h2><p className="modal-description">También se borrará todo su historial. Esta acción no se puede deshacer.</p><div className="modal-actions"><button className="button-quiet" onClick={() => setModal(null)}>Cancelar</button><button className="button-danger" onClick={() => selectedHabit && deleteHabit(selectedHabit)}>Eliminar hábito</button></div></> : <form onSubmit={saveHabit}><div className="modal-icon"><Leaf size={20} /></div><p className="eyebrow">{modal === 'edit' ? 'UN CAMBIO A TU MEDIDA' : 'UN PASO PARA TI'}</p><h2 id="modal-title">{modal === 'edit' ? 'Editar hábito' : '¿Qué quieres incorporar?'}</h2><p className="modal-description">Elige algo sencillo que quieras repetir cada día.</p><label className="form-label" htmlFor="habit-name">Nombre del hábito</label><input id="habit-name" className="habit-input" autoFocus maxLength={60} placeholder="Ej. Leer 10 minutos" value={habitName} onChange={event => setHabitName(event.target.value)} /><div className="modal-actions"><button type="button" className="button-quiet" onClick={() => setModal(null)}>Cancelar</button><button type="submit" className="button-primary" disabled={!habitName.trim()}>{modal === 'edit' ? 'Guardar cambios' : 'Crear hábito'} <ArrowRight size={16} /></button></div></form>}</section></div>}
+      {modal && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setModal(null) }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" aria-label="Cerrar" onClick={() => setModal(null)}><X size={18} /></button>{modal === 'delete' ? <><div className="modal-icon danger"><Trash2 size={20} /></div><p className="eyebrow">ELIMINAR HÁBITO</p><h2 id="modal-title">¿Eliminar «{selectedHabit?.name}»?</h2><p className="modal-description">También se borrará todo su historial. Esta acción no se puede deshacer.</p><div className="modal-actions"><button className="button-quiet" onClick={() => setModal(null)}>Cancelar</button><button className="button-danger" onClick={() => selectedHabit && deleteHabit(selectedHabit)}>Eliminar hábito</button></div></> : <form onSubmit={saveHabit}><div className="modal-icon">{habitKind === 'avoid' ? <Flame size={20} /> : <Leaf size={20} />}</div><p className="eyebrow">{modal === 'edit' ? 'UN CAMBIO A TU MEDIDA' : 'UN PASO A TU RITMO'}</p><h2 id="modal-title">{modal === 'edit' ? 'Editar seguimiento' : '¿Qué quieres trabajar?'}</h2><p className="modal-description">Puedes crear una rutina que te ayude o llevar la cuenta de días sin un hábito.</p><label className="form-label" htmlFor="habit-kind">Tipo de seguimiento</label><select id="habit-kind" className="habit-input" value={habitKind} onChange={event => setHabitKind(event.target.value as 'build' | 'avoid')}><option value="build">Crear un hábito positivo</option><option value="avoid">Dejar un mal hábito</option></select><label className="form-label" htmlFor="habit-name">Nombre</label><input id="habit-name" className="habit-input" autoFocus maxLength={60} placeholder={habitKind === 'avoid' ? 'Ej. No fumar' : 'Ej. Leer 10 minutos'} value={habitName} onChange={event => setHabitName(event.target.value)} /><div className="modal-actions"><button type="button" className="button-quiet" onClick={() => setModal(null)}>Cancelar</button><button type="submit" className="button-primary" disabled={!habitName.trim()}>{modal === 'edit' ? 'Guardar cambios' : 'Crear seguimiento'} <ArrowRight size={16} /></button></div></form>}</section></div>}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
     </div>
   )
@@ -267,6 +328,11 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   return <div className="empty-state"><div className="empty-illustration"><Leaf size={25} /><span>✳</span></div><h3>Aquí empieza tu ritmo</h3><p>Añade un hábito pequeño que te gustaría cuidar cada día.</p><button className="button-primary" onClick={onAdd}><Plus size={16} /> Crear mi primer hábito</button></div>
 }
 
+function TaskPanel({ tasks, title, dueDate, dueTime, onTitle, onDueDate, onDueTime, onAdd, onToggle, onRemove, calendarLink, compact = false }: { tasks: Task[]; title: string; dueDate: string; dueTime: string; onTitle: (value: string) => void; onDueDate: (value: string) => void; onDueTime: (value: string) => void; onAdd: (event: React.FormEvent) => void; onToggle: (task: Task) => void; onRemove: (task: Task) => void; calendarLink: (task: Task) => string; compact?: boolean }) {
+  const visibleTasks = compact ? tasks.slice(0, 4) : tasks
+  return <section className={`tasks-panel ${compact ? 'compact' : ''}`}><div className="section-heading"><div><h2>{compact ? 'Tareas para hoy' : 'Pendientes'}</h2><p>{compact ? `${tasks.length} por hacer` : 'Marca lo que termines y llévalo a Google Calendar si lo necesitas.'}</p></div></div><form className="task-form" onSubmit={onAdd}><input className="habit-input" aria-label="Nueva tarea" placeholder="Ej. Llamar al dentista" maxLength={120} value={title} onChange={event => onTitle(event.target.value)} /><input className="habit-input task-date" type="date" aria-label="Fecha de la tarea" value={dueDate} onChange={event => onDueDate(event.target.value)} /><input className="habit-input task-time" type="time" aria-label="Hora de la tarea" value={dueTime} onChange={event => onDueTime(event.target.value)} /><button className="button-primary" type="submit" disabled={!title.trim()}><Plus size={16} /> Añadir</button></form>{visibleTasks.length ? <div className="task-list">{visibleTasks.map(task => <article className={`task-row ${task.done ? 'task-done' : ''}`} key={task.id}><button className={`task-check ${task.done ? 'checked' : ''}`} aria-label={task.done ? `Reabrir ${task.title}` : `Completar ${task.title}`} aria-pressed={task.done} onClick={() => onToggle(task)}>{task.done && <Check size={15} />}</button><div className="task-copy"><strong>{task.title}</strong><span>{task.dueDate === dateKey(new Date()) ? 'Hoy' : new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(parseKey(task.dueDate))} · {task.dueTime || '09:00'}</span></div><a className="calendar-link" href={calendarLink(task)} target="_blank" rel="noreferrer" aria-label={`Crear evento de Google Calendar: ${task.title}`} title="Crear evento en Google Calendar"><CalendarDays size={16} /></a><button className="icon-action" aria-label={`Eliminar tarea ${task.title}`} onClick={() => onRemove(task)}><Trash2 size={15} /></button></article>)}</div> : <p className="empty-inline">No tienes tareas pendientes. Puedes dejar este espacio vacío.</p>}{compact && tasks.length > 4 && <p className="task-more">Y {tasks.length - 4} tareas más en Pendientes.</p>}<p className="calendar-note">El botón de calendario abre un evento preparado para guardar; la sincronización automática requiere conectar una cuenta de Google.</p></section>
+}
+
 function HabitRow({ habit, index, date, today, onToggle, onEdit, onArchive }: { habit: Habit; index: number; date: Date; today: Date; onToggle: (habit: Habit, date: Date) => void; onEdit: (habit: Habit) => void; onArchive: (habit: Habit) => void }) {
   const done = habit.completedDates.includes(dateKey(date))
   const canToggle = dateKey(date) <= dateKey(today) && expectedOn(habit, date)
@@ -277,3 +343,4 @@ function ManageRow({ habit, index, archived = false, onEdit, onArchive, onDelete
   const streak = currentStreak(habit, new Date())
   return <article className={`manage-row ${archived ? 'is-archived' : ''}`}><span className={`manage-habit-icon color-${index % 5}`}><Leaf size={17} /></span><div className="manage-name"><strong>{habit.name}</strong><span>{archived ? `En pausa desde el ${shortDate(parseKey(habit.archivedAt!))} · historial guardado` : `${streak ? `${streak} días de racha · ` : ''}Desde el ${shortDate(parseKey(habit.createdAt))}`}</span></div>{!archived && streak > 0 && <span className="manage-streak"><Flame size={14} /> {streak}</span>}<div className="manage-actions"><button aria-label={archived ? 'Reactivar hábito' : 'Editar hábito'} title={archived ? 'Reactivar hábito' : 'Editar hábito'} onClick={() => archived ? onArchive(habit) : onEdit(habit)}>{archived ? <ArrowDown size={17} /> : <MoreHorizontal size={19} />}</button>{!archived && <button aria-label="Archivar hábito" title="Archivar hábito" onClick={() => onArchive(habit)}><Archive size={16} /></button>}<button className="delete-action" aria-label="Eliminar hábito" title="Eliminar hábito" onClick={() => onDelete(habit)}><Trash2 size={16} /></button></div></article>
 }
+
