@@ -356,6 +356,28 @@ button { color: inherit; }
 :root[data-theme="dark"] .theme-toggle:hover { background: #2c362e; }
 
 .tasks-panel,.recovery-card,.focus-card { margin-bottom: 18px; padding: 22px; border: 1px solid #343d36; border-radius: 13px; background: #222a24; }
+.calendar-connection { margin: 0 0 16px; padding: 20px; border: 1px solid #343d36; border-radius: 13px; background: #202721; }
+.calendar-connection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.calendar-connection-heading h2 { margin: 5px 0 0; font-size: 16px; }
+.calendar-connection > p { color: #a7b1a9; font-size: 11px; line-height: 1.55; }
+.calendar-status { display: flex; align-items: center; gap: 7px; color: #a7b1a9; font-size: 10px; }
+.calendar-status i { width: 7px; height: 7px; border-radius: 50%; background: #69756c; }
+.calendar-status.is-connected i { background: #91bb92; box-shadow: 0 0 0 3px #91bb9220; }
+.calendar-config-row { display: flex; gap: 8px; }
+.calendar-config-row .habit-input { min-width: 0; flex: 1; }
+.calendar-config-save { border: 1px solid #3b473e; border-radius: 8px; font-size: 10px; }
+.calendar-connection-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.calendar-connection-actions .button-primary,.calendar-connection-actions .button-quiet { padding: 9px 12px; font-size: 10px; }
+.calendar-connection-actions a { color: #a8c8a9; font-size: 10px; text-decoration: none; }
+.calendar-web-link,.privacy-policy-link { color: #a8c8a9; font-size: 10px; text-decoration: none; }
+.calendar-web-link:hover,.privacy-policy-link:hover { text-decoration: underline; }
+.calendar-connection-actions a:hover { text-decoration: underline; }
+.calendar-security,.calendar-message { color: #95a199; font-size: 10px!important; line-height: 1.5; }
+.calendar-security { margin: 12px 0 0; }
+.calendar-security code { color: #c4d3c7; font-size: 9px; }
+.calendar-message { margin: 7px 0 0; color: #c9d5cb!important; }
+.calendar-link:disabled { opacity: .5; cursor: wait; }
+.calendar-saved { color: #bed5a9; }
 .tasks-panel .section-heading { margin-bottom: 16px; }
 .task-form { display: grid; grid-template-columns: minmax(120px,1fr) 145px 115px auto; gap: 9px; margin-bottom: 14px; }
 .task-date { color-scheme: inherit; }
@@ -392,4 +414,30 @@ button { color: inherit; }
 .recovery-actions .button-quiet { padding: 8px 10px; font-size: 10px; }
 .tasks-panel .empty-inline { padding: 10px 0; }
 @media(max-width:760px){.mobile-nav{grid-template-columns:repeat(6,1fr)}.mobile-nav .nav-button{gap:2px;padding:4px 0;font-size:7px}.mobile-nav .nav-button svg{width:17px;height:17px}.task-form{grid-template-columns:minmax(0,1fr) 120px;gap:7px}.task-form .habit-input:first-child{grid-column:1;grid-row:1}.task-form .task-date{grid-column:1;grid-row:2}.task-form .task-time{grid-column:2;grid-row:2}.task-form button{grid-column:2;grid-row:1}.tasks-panel,.recovery-card{padding:15px}.tasks-panel.compact{padding:15px}.focus-card{align-items:flex-start;flex-direction:column;padding:16px}.recovery-actions{gap:5px}.recovery-actions .button-danger{flex:1}}
+
+:root[data-theme="light"] .calendar-connection,
+:root[data-theme="light"] .tasks-panel,
+:root[data-theme="light"] .recovery-card,
+:root[data-theme="light"] .focus-card { border-color: #e3e9e2; background: #fff; }
+:root[data-theme="light"] .calendar-connection > p,
+:root[data-theme="light"] .calendar-security,
+:root[data-theme="light"] .calendar-note,
+:root[data-theme="light"] .task-copy span,
+:root[data-theme="light"] .recovery-meta,
+:root[data-theme="light"] .focus-card p { color: #758078; }
+:root[data-theme="light"] .calendar-connection-heading h2,
+:root[data-theme="light"] .focus-card h2 { color: #2b3a30; }
+:root[data-theme="light"] .calendar-security code { color: #47624b; }
+:root[data-theme="light"] .calendar-connection-actions a,
+:root[data-theme="light"] .calendar-web-link,
+:root[data-theme="light"] .privacy-policy-link,
+:root[data-theme="light"] .recovery-history summary { color: #486d50; }
+:root[data-theme="light"] .calendar-config-save { border-color: #e3e9e2; }
+:root[data-theme="light"] .task-row { border-color: #e4e9e3; background: #f8faf7; }
+:root[data-theme="light"] .task-copy strong { color: #2e3931; }
+:root[data-theme="light"] .task-done .task-copy strong { color: #89938c; }
+:root[data-theme="light"] .recovery-intro { background: #f0f4ed; color: #627063; }
+:root[data-theme="light"] .recovery-days strong { color: #456348; }
+:root[data-theme="light"] .recovery-history { color: #657267; }
+:root[data-theme="light"] .recovery-history summary { color: #486d50; }
 
