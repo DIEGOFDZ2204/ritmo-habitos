@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
+import { StatusBar, Style as StatusBarStyle } from '@capacitor/status-bar'
 import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown,
   CalendarDays, CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Moon, Plus, Sparkles, Sun,
@@ -148,6 +149,11 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#171d19' : '#f8f8f5')
+    if (Capacitor.isNativePlatform()) {
+      void StatusBar.setOverlaysWebView({ overlay: false })
+      void StatusBar.setBackgroundColor({ color: theme === 'dark' ? '#171d19' : '#f8f8f5' })
+      void StatusBar.setStyle({ style: theme === 'dark' ? StatusBarStyle.Dark : StatusBarStyle.Light })
+    }
     try { localStorage.setItem(THEME_KEY, theme) } catch { /* Theme still applies for this session. */ }
   }, [theme])
 

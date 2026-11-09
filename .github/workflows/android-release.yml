@@ -27,6 +27,20 @@ jobs:
       - run: pnpm build
       - run: pnpm exec cap add android
       - run: pnpm exec cap sync android
+      - name: Evitar que la barra de estado cubra la app en Android 15
+        run: |
+          mkdir -p android/app/src/main/res/values-v35
+          cat > android/app/src/main/res/values-v35/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme.NoActionBar">
+                  <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+              </style>
+              <style name="AppTheme.NoActionBarLaunch">
+                  <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+              </style>
+          </resources>
+          EOF
       - name: Seleccionar etiqueta de versión
         id: release
         shell: bash
@@ -34,7 +48,7 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            echo "tag=v1.1.0" >> "$GITHUB_OUTPUT"
+            echo "tag=v1.2.0" >> "$GITHUB_OUTPUT"
           else
             echo "tag=v$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           fi
