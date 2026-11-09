@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown,
   CalendarDays, CircleHelp, Flame, Leaf, ListChecks, MoreHorizontal, Moon, Plus, Sparkles, Sun,
@@ -14,13 +15,27 @@ type Habit = {
   kind?: 'build' | 'avoid'
   lapseDates?: string[]
 }
-type Task = { id: string; title: string; dueDate: string; dueTime?: string; done: boolean; createdAt: string }
+type Task = { id: string; title: string; dueDate: string; dueTime?: string; done: boolean; createdAt: string; googleEventId?: string; googleEventUrl?: string }
 type Store = { habits: Habit[]; tasks: Task[] }
 type View = 'today' | 'week' | 'month' | 'habits' | 'tasks' | 'recovery'
 type Theme = 'dark' | 'light'
+type GoogleTokenResponse = { access_token?: string; expires_in?: number; error?: string }
+type GoogleTokenClient = { requestAccessToken: (options?: { prompt?: string }) => void }
+type CalendarToken = { accessToken: string; expiresAt: number }
+
+declare global {
+  interface Window {
+    google?: { accounts: { oauth2: {
+      initTokenClient: (options: { client_id: string; scope: string; callback: (response: GoogleTokenResponse) => void }) => GoogleTokenClient
+      revoke: (token: string, callback: (response: { successful?: boolean }) => void) => void
+    } } }
+  }
+}
 
 const STORAGE_KEY = 'ritmo-habitos-v1'
 const THEME_KEY = 'ritmo-theme'
+const GOOGLE_CLIENT_KEY = 'ritmo-google-client-id'
+const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
 const weekdays = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 
@@ -55,6 +70,9 @@ function readStore(): Store {
 }
 function readTheme(): Theme {
   try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark' } catch { return 'dark' }
+}
+function readGoogleClientId() {
+  try { return localStorage.getItem(GOOGLE_CLIENT_KEY) ?? '' } catch { return '' }
 }
 function shortDate(date: Date) {
   return new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(date).replace('.', '')
@@ -93,6 +111,7 @@ function periodStats(habits: Habit[], dates: Date[]) {
 
 export default function App() {
   const [store, setStore] = useState<Store>(readStore)
+  const storeRef = useRef(store)
   const [view, setView] = useState<View>('today')
   const [theme, setTheme] = useState<Theme>(readTheme)
   const [selectedDate, setSelectedDate] = useState(() => new Date())
@@ -104,6 +123,10 @@ export default function App() {
   const [taskTitle, setTaskTitle] = useState('')
   const [taskDueDate, setTaskDueDate] = useState(dateKey(new Date()))
   const [taskDueTime, setTaskDueTime] = useState('09:00')
+  const [googleClientId, setGoogleClientId] = useState(readGoogleClientId)
+  const [calendarToken, setCalendarToken] = useState<CalendarToken | null>(null)
+  const [calendarMessage, setCalendarMessage] = useState('')
+  const [calendarBusyIds, setCalendarBusyIds] = useState<string[]>([])
   const [showArchived, setShowArchived] = useState(false)
   const [toast, setToast] = useState('')
   const today = useMemo(() => new Date(), [])
@@ -119,6 +142,8 @@ export default function App() {
   const completion = todayTotals.total ? Math.round(todayTotals.done / todayTotals.total * 100) : 0
   const streaks = buildHabits.map(habit => currentStreak(habit, today))
   const bestStreak = Math.max(0, ...streaks)
+  const nativePlatform = Capacitor.isNativePlatform()
+  const calendarConnected = Boolean(calendarToken && calendarToken.expiresAt > Date.now() + 30_000)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -126,10 +151,17 @@ export default function App() {
     try { localStorage.setItem(THEME_KEY, theme) } catch { /* Theme still applies for this session. */ }
   }, [theme])
 
+  useEffect(() => {
+    if (!calendarToken) return
+    const timeout = window.setTimeout(() => setCalendarToken(null), Math.max(0, calendarToken.expiresAt - Date.now()))
+    return () => window.clearTimeout(timeout)
+  }, [calendarToken])
+
   function persist(habits: Habit[]) {
     persistStore({ ...store, habits })
   }
   function persistStore(next: Store) {
+    storeRef.current = next
     setStore(next)
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)) } catch {
       notify('No se pudo guardar en este dispositivo.')
@@ -214,6 +246,105 @@ export default function App() {
     const params = new URLSearchParams({ action: 'TEMPLATE', text: task.title, dates: `${format(start)}/${format(end)}`, ctz: Intl.DateTimeFormat().resolvedOptions().timeZone, details: 'Creado desde Ritmo' })
     return `https://calendar.google.com/calendar/render?${params}`
   }
+  function saveGoogleClientId() {
+    const clientId = googleClientId.trim()
+    setGoogleClientId(clientId)
+    setCalendarToken(null)
+    try {
+      if (clientId) localStorage.setItem(GOOGLE_CLIENT_KEY, clientId)
+      else localStorage.removeItem(GOOGLE_CLIENT_KEY)
+      setCalendarMessage(clientId ? 'ID de cliente guardado en este dispositivo.' : 'Se ha quitado el ID de cliente.')
+    } catch { setCalendarMessage('No se pudo guardar la configuración en este dispositivo.') }
+  }
+  function requestCalendarAccess(onAccess: (accessToken: string) => void) {
+    if (!googleClientId.trim()) {
+      setCalendarMessage('Añade primero el ID de cliente OAuth de tu proyecto de Google Cloud.')
+      return
+    }
+    if (calendarToken && calendarToken.expiresAt > Date.now() + 30_000) {
+      onAccess(calendarToken.accessToken)
+      return
+    }
+    const oauth = window.google?.accounts.oauth2
+    if (!oauth) {
+      setCalendarMessage('No se pudo cargar Google Identity Services. Comprueba tu conexión y vuelve a intentarlo.')
+      return
+    }
+    const client = oauth.initTokenClient({
+      client_id: googleClientId.trim(),
+      scope: CALENDAR_SCOPE,
+      callback: response => {
+        if (response.error || !response.access_token) {
+          setCalendarMessage('No se concedió acceso al calendario. Puedes intentarlo de nuevo cuando quieras.')
+          return
+        }
+        const token = { accessToken: response.access_token, expiresAt: Date.now() + (response.expires_in ?? 3600) * 1000 }
+        setCalendarToken(token)
+        setCalendarMessage('Google Calendar conectado en esta sesión.')
+        onAccess(token.accessToken)
+      },
+    })
+    client.requestAccessToken({ prompt: 'select_account' })
+  }
+  function connectCalendar() {
+    saveGoogleClientId()
+    requestCalendarAccess(() => setCalendarMessage('Google Calendar conectado en esta sesión.'))
+  }
+  function disconnectCalendar() {
+    const oauth = window.google?.accounts.oauth2
+    if (calendarToken && oauth) {
+      oauth.revoke(calendarToken.accessToken, () => setCalendarMessage('Se ha retirado el acceso de Google Calendar.'))
+    } else {
+      setCalendarMessage('Se ha cerrado la sesión de Calendar en Ritmo. Para retirar el permiso concedido, revócalo también desde tu cuenta de Google.')
+    }
+    setCalendarToken(null)
+  }
+  async function sendTaskToCalendar(task: Task, accessToken: string) {
+    if (task.googleEventId) {
+      setCalendarMessage('Esta tarea ya está añadida a Google Calendar.')
+      return
+    }
+    const start = new Date(`${task.dueDate}T${task.dueTime || '09:00'}:00`)
+    const end = new Date(start.getTime() + 30 * 60_000)
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    try {
+      const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          summary: task.title,
+          description: 'Creado desde Ritmo',
+          start: { dateTime: start.toISOString(), timeZone },
+          end: { dateTime: end.toISOString(), timeZone },
+          reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 10 }] },
+        }),
+      })
+      const event = await response.json() as { id?: string; htmlLink?: string; error?: { message?: string } }
+      if (!response.ok || !event.id) throw new Error(event.error?.message ?? 'Google no pudo crear el evento.')
+      const current = storeRef.current
+      persistStore({ ...current, tasks: current.tasks.map(item => item.id === task.id ? { ...item, googleEventId: event.id, googleEventUrl: event.htmlLink } : item) })
+      setCalendarMessage(`«${task.title}» se ha creado en Google Calendar con un aviso 10 minutos antes.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No se pudo crear el evento.'
+      setCalendarMessage(`${message} Revisa la configuración de Calendar y prueba otra vez.`)
+    } finally {
+      setCalendarBusyIds(ids => ids.filter(id => id !== task.id))
+    }
+  }
+  function addTaskToCalendar(task: Task) {
+    if (calendarBusyIds.includes(task.id)) return
+    if (!googleClientId.trim()) {
+      setCalendarMessage('Guarda un ID de cliente OAuth para poder conectar Google Calendar.')
+      return
+    }
+    if ((!calendarToken || calendarToken.expiresAt <= Date.now() + 30_000) && !window.google?.accounts.oauth2) {
+      setCalendarMessage('No se pudo cargar Google Identity Services. Comprueba tu conexión y vuelve a intentarlo.')
+      return
+    }
+    setCalendarBusyIds(ids => [...ids, task.id])
+    requestCalendarAccess(accessToken => { void sendTaskToCalendar(task, accessToken) })
+    window.setTimeout(() => setCalendarBusyIds(ids => ids.filter(id => id !== task.id)), 90_000)
+  }
   function shiftPeriod(amount: number) {
     if (view === 'week') setSelectedDate(date => shiftDate(date, amount * 7))
     else setSelectedDate(date => new Date(date.getFullYear(), date.getMonth() + amount, 1))
@@ -285,7 +416,7 @@ export default function App() {
               {buildHabits.length === 0 ? <EmptyState onAdd={() => openAdd('build')} /> : <div className="habit-list">{visibleHabits.map((habit, index) => <HabitRow key={habit.id} habit={habit} index={index} date={selectedDate} today={today} onToggle={toggleHabit} onEdit={openEdit} onArchive={archiveHabit} />)}</div>}
               {buildHabits.length > 0 && <button className="add-habit-row" onClick={() => openAdd('build')}><span><Plus size={17} /></span> Añadir otro hábito</button>}
             </section>
-            <TaskPanel tasks={openTasks} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: true })} onRemove={removeTask} calendarLink={calendarLink} compact />
+            <TaskPanel tasks={openTasks} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: true })} onRemove={removeTask} calendarLink={calendarLink} calendarConfigured={Boolean(googleClientId.trim()) && !nativePlatform} calendarConnected={calendarConnected && !nativePlatform} busyTaskIds={calendarBusyIds} onAddToCalendar={addTaskToCalendar} compact />
             {avoidHabits.length > 0 && <section className="focus-card"><div><span className="card-kicker">CUIDARTE TAMBIÉN ES AVANZAR</span><h2>{avoidHabits.length} seguimiento{avoidHabits.length === 1 ? '' : 's'} de días limpios</h2><p>Tu progreso está en Días limpios.</p></div><button className="button-quiet" onClick={() => switchView('recovery')}>Ver progreso <ArrowRight size={15} /></button></section>}
             <section className="week-preview"><div className="section-heading compact"><div><h2>Esta semana</h2><p>Tu ritmo, día a día</p></div><button className="text-button" onClick={() => switchView('week')}>Ver resumen <ArrowRight size={15} /></button></div><div className="week-strip">{weekDates.map((date, index) => { const total = dayTotals(activeHabits, date); const pct = total.total ? total.done / total.total * 100 : 0; return <button className={`week-day ${sameDay(date, today) ? 'is-today' : ''} ${dateKey(date) > todayKey ? 'future' : ''}`} key={index} onClick={() => setSelectedDate(date)}><span>{weekdays[index]}</span><strong>{date.getDate()}</strong><i><b style={{ width: `${pct}%` }} /></i></button> })}</div></section>
           </>}
@@ -298,7 +429,7 @@ export default function App() {
             <section className="detail-card"><div className="section-heading"><div><h2>Progreso por hábito</h2><p>Un vistazo a cada uno de tus hábitos</p></div></div>{summaryHabits.length ? <div className="habit-progress-list">{summaryHabits.map((habit, index) => { const dates = displayedDates.filter(date => dateKey(date) <= todayKey && expectedOn(habit, date)); const done = dates.filter(date => habit.completedDates.includes(dateKey(date))).length; const percent = dates.length ? Math.round(done / dates.length * 100) : 0; const streak = currentStreak(habit, today); return <div className="habit-progress-row" key={habit.id}><span className={`habit-mini-icon color-${index % 5}`}><Leaf size={16} /></span><div className="habit-progress-name"><strong>{habit.name}</strong><span>{done} de {dates.length} días</span></div><div className="habit-progress-meter"><i style={{ width: `${percent}%` }} /></div><strong className="habit-progress-pct">{percent}%</strong>{streak > 0 && <span className="mini-streak"><Flame size={13} />{streak}</span>}</div> })}</div> : <div className="empty-inline">Todavía no hay hábitos en este periodo.</div>}</section>
           </>}
 
-          {view === 'tasks' && <><section className="greeting-row"><div><p className="eyebrow">UN PASO A LA VEZ</p><h1>Tus tareas pendientes</h1><p className="subtitle">Saca las cosas de tu cabeza y ponlas en un lugar tranquilo.</p></div></section><TaskPanel tasks={store.tasks.slice().sort((a, b) => Number(a.done) - Number(b.done) || a.dueDate.localeCompare(b.dueDate))} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: !task.done })} onRemove={removeTask} calendarLink={calendarLink} /></>}
+          {view === 'tasks' && <><section className="greeting-row"><div><p className="eyebrow">UN PASO A LA VEZ</p><h1>Tus tareas pendientes</h1><p className="subtitle">Saca las cosas de tu cabeza y ponlas en un lugar tranquilo.</p></div></section><CalendarConnection clientId={googleClientId} onClientId={setGoogleClientId} onSave={saveGoogleClientId} connected={calendarConnected} onConnect={connectCalendar} onDisconnect={disconnectCalendar} message={calendarMessage} nativePlatform={nativePlatform} /><TaskPanel tasks={store.tasks.slice().sort((a, b) => Number(a.done) - Number(b.done) || a.dueDate.localeCompare(b.dueDate))} title={taskTitle} dueDate={taskDueDate} dueTime={taskDueTime} onTitle={setTaskTitle} onDueDate={setTaskDueDate} onDueTime={setTaskDueTime} onAdd={addTask} onToggle={task => updateTask(task, { done: !task.done })} onRemove={removeTask} calendarLink={calendarLink} calendarConfigured={Boolean(googleClientId.trim()) && !nativePlatform} calendarConnected={calendarConnected && !nativePlatform} busyTaskIds={calendarBusyIds} onAddToCalendar={addTaskToCalendar} /> </>}
 
           {view === 'recovery' && <><section className="greeting-row"><div><p className="eyebrow">SIN CULPA, UN DÍA A LA VEZ</p><h1>Días limpios</h1><p className="subtitle">Registra el tiempo desde tu último consumo o conducta. Un tropiezo no borra lo que has avanzado.</p></div><button className="button-primary add-top" onClick={() => openAdd('avoid')}><Plus size={17} /> Nuevo seguimiento</button></section><div className="recovery-intro"><Flame size={19} /><span>El contador se reinicia al registrar un día y conserva las rachas anteriores en tu historial.</span></div>{avoidHabits.length ? <div className="recovery-list">{avoidHabits.map(habit => { const days = cleanDays(habit); const lapsedToday = (habit.lapseDates ?? []).includes(todayKey); const lastLapse = [...(habit.lapseDates ?? [])].sort().at(-1); const history = cleanHistory(habit); return <article className="recovery-card" key={habit.id}><div className="recovery-card-top"><div><span className="card-kicker">SEGUIMIENTO</span><h2>{habit.name}</h2></div><div className="recovery-days"><strong>{days}</strong><span>{days === 1 ? 'día limpio' : 'días limpios'}</span></div></div><div className="recovery-meta">{lastLapse ? `Último reinicio: ${shortDate(parseKey(lastLapse))}` : `Desde ${shortDate(parseKey(habit.createdAt))}`} · {history.length} reinicios registrados</div>{history.length > 0 && <details className="recovery-history"><summary>Ver rachas anteriores</summary><ul>{history.slice().reverse().map(item => <li key={item.date}>{item.days} {item.days === 1 ? 'día limpio' : 'días limpios'} hasta el {shortDate(parseKey(item.date))}</li>)}</ul></details>}<div className="recovery-actions"><button className="button-danger" onClick={() => recordLapse(habit)} disabled={lapsedToday}>{lapsedToday ? 'Día registrado' : 'Registrar un tropiezo'}</button>{lapsedToday && <button className="button-quiet" onClick={() => undoLapse(habit)}>Deshacer</button>}<button className="icon-action" aria-label={`Editar ${habit.name}`} onClick={() => openEdit(habit)}><MoreHorizontal size={18} /></button><button className="icon-action" aria-label={`Archivar ${habit.name}`} onClick={() => archiveHabit(habit)}><Archive size={16} /></button><button className="icon-action delete-action" aria-label={`Eliminar ${habit.name} y su historial`} onClick={() => { setActiveId(habit.id); setModal('delete') }}><Trash2 size={15} /></button></div></article>})}</div> : <div className="empty-state"><div className="empty-illustration"><Flame size={25} /></div><h3>Un espacio para empezar cuando tú quieras</h3><p>Elige un hábito que quieras dejar y empezaremos a contar los días.</p><button className="button-primary" onClick={() => openAdd('avoid')}><Plus size={16} /> Crear seguimiento</button></div>}</>}
 
@@ -307,7 +438,7 @@ export default function App() {
             <div className="manage-stat-row"><div><span className="manage-stat-icon"><Leaf size={17} /></span><strong>{buildHabits.length}</strong><span>hábitos activos</span></div><div><span className="manage-stat-icon archive"><Archive size={17} /></span><strong>{archivedHabits.length}</strong><span>en pausa</span></div><div className="manage-message"><Sparkles size={17} /><span>Un hábito pequeño puede cambiar un día entero.</span></div></div>
             <section className="habits-section manage-section"><div className="section-heading"><div><h2>En tu rutina</h2><p>Los hábitos que te acompañan cada día.</p></div></div>{buildHabits.length ? <div className="manage-list">{buildHabits.map((habit, index) => <ManageRow key={habit.id} habit={habit} index={index} onEdit={openEdit} onArchive={archiveHabit} onDelete={item => { setActiveId(item.id); setModal('delete') }} />)}</div> : <EmptyState onAdd={() => openAdd('build')} />}</section>
             {archivedHabits.length > 0 && <section className="archived-section"><button className="archive-toggle" onClick={() => setShowArchived(!showArchived)}><Archive size={17} /><span>Hábitos archivados</span><span className="archive-count">{archivedHabits.length}</span><ChevronDown className={showArchived ? 'rotated' : ''} size={17} /></button>{showArchived && <div className="manage-list archived-list">{archivedHabits.map((habit, index) => <ManageRow key={habit.id} habit={habit} index={index} archived onEdit={openEdit} onArchive={reactivateHabit} onDelete={item => { setActiveId(item.id); setModal('delete') }} />)}</div>}</section>}
-            <aside className="privacy-note"><CircleHelp size={17} /><p><strong>Tus datos son solo tuyos.</strong> Hábitos, tareas y seguimientos se guardan en este dispositivo. Nadie más puede verlos.</p></aside>
+            <aside className="privacy-note"><CircleHelp size={17} /><p><strong>Tus datos son solo tuyos.</strong> Hábitos, tareas y seguimientos se guardan en este dispositivo. Nadie más puede verlos.</p><a className="privacy-policy-link" href="./privacy.html">Privacidad</a></aside>
           </>}
         </div>
       </main>
@@ -328,9 +459,14 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   return <div className="empty-state"><div className="empty-illustration"><Leaf size={25} /><span>✳</span></div><h3>Aquí empieza tu ritmo</h3><p>Añade un hábito pequeño que te gustaría cuidar cada día.</p><button className="button-primary" onClick={onAdd}><Plus size={16} /> Crear mi primer hábito</button></div>
 }
 
-function TaskPanel({ tasks, title, dueDate, dueTime, onTitle, onDueDate, onDueTime, onAdd, onToggle, onRemove, calendarLink, compact = false }: { tasks: Task[]; title: string; dueDate: string; dueTime: string; onTitle: (value: string) => void; onDueDate: (value: string) => void; onDueTime: (value: string) => void; onAdd: (event: React.FormEvent) => void; onToggle: (task: Task) => void; onRemove: (task: Task) => void; calendarLink: (task: Task) => string; compact?: boolean }) {
+function CalendarConnection({ clientId, onClientId, onSave, connected, onConnect, onDisconnect, message, nativePlatform }: { clientId: string; onClientId: (value: string) => void; onSave: () => void; connected: boolean; onConnect: () => void; onDisconnect: () => void; message: string; nativePlatform: boolean }) {
+  if (nativePlatform) return <section className="calendar-connection"><div className="calendar-connection-heading"><div><span className="card-kicker">CALENDARIO</span><h2>Google Calendar</h2></div></div><p>La conexión directa de Google se ofrece en la versión web abierta en Safari o Chrome. Google bloquea los flujos OAuth dentro de las WebView de aplicaciones nativas.</p><a className="calendar-web-link" href="https://diegofdz2204.github.io/ritmo-habitos/" target="_blank" rel="noreferrer">Abrir Ritmo en el navegador</a><p className="calendar-security">En esta app puedes seguir preparando eventos con el icono de calendario junto a cada tarea.</p></section>
+  return <section className="calendar-connection"><div className="calendar-connection-heading"><div><span className="card-kicker">CALENDARIO</span><h2>Google Calendar</h2></div><span className={`calendar-status ${connected ? 'is-connected' : ''}`}><i />{connected ? 'Conectado en esta sesión' : 'Sin conectar'}</span></div><p>Conecta tu cuenta para crear eventos con recordatorio. Ritmo solo enviará a Google las tareas que elijas añadir.</p><label className="form-label" htmlFor="google-client-id">ID de cliente OAuth web</label><div className="calendar-config-row"><input id="google-client-id" className="habit-input" autoComplete="off" spellCheck={false} placeholder="123...apps.googleusercontent.com" value={clientId} onChange={event => onClientId(event.target.value)} /><button className="button-quiet calendar-config-save" onClick={onSave}>Guardar ID</button></div><div className="calendar-connection-actions"><button className="button-primary" disabled={!clientId.trim()} onClick={onConnect}>{connected ? 'Actualizar conexión' : 'Conectar Google Calendar'}</button>{connected && <button className="button-quiet" onClick={onDisconnect}>Desconectar</button>}<a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Configurar en Google Cloud</a></div><p className="calendar-security">Necesitas habilitar Google Calendar API y autorizar como origen JavaScript <code>https://diegofdz2204.github.io</code>. El permiso solicitado es solo para crear eventos; el token se mantiene en memoria durante esta sesión.</p>{message && <p className="calendar-message" role="status">{message}</p>}</section>
+}
+
+function TaskPanel({ tasks, title, dueDate, dueTime, onTitle, onDueDate, onDueTime, onAdd, onToggle, onRemove, calendarLink, calendarConfigured, calendarConnected, busyTaskIds, onAddToCalendar, compact = false }: { tasks: Task[]; title: string; dueDate: string; dueTime: string; onTitle: (value: string) => void; onDueDate: (value: string) => void; onDueTime: (value: string) => void; onAdd: (event: React.FormEvent) => void; onToggle: (task: Task) => void; onRemove: (task: Task) => void; calendarLink: (task: Task) => string; calendarConfigured: boolean; calendarConnected: boolean; busyTaskIds: string[]; onAddToCalendar: (task: Task) => void; compact?: boolean }) {
   const visibleTasks = compact ? tasks.slice(0, 4) : tasks
-  return <section className={`tasks-panel ${compact ? 'compact' : ''}`}><div className="section-heading"><div><h2>{compact ? 'Tareas para hoy' : 'Pendientes'}</h2><p>{compact ? `${tasks.length} por hacer` : 'Marca lo que termines y llévalo a Google Calendar si lo necesitas.'}</p></div></div><form className="task-form" onSubmit={onAdd}><input className="habit-input" aria-label="Nueva tarea" placeholder="Ej. Llamar al dentista" maxLength={120} value={title} onChange={event => onTitle(event.target.value)} /><input className="habit-input task-date" type="date" aria-label="Fecha de la tarea" value={dueDate} onChange={event => onDueDate(event.target.value)} /><input className="habit-input task-time" type="time" aria-label="Hora de la tarea" value={dueTime} onChange={event => onDueTime(event.target.value)} /><button className="button-primary" type="submit" disabled={!title.trim()}><Plus size={16} /> Añadir</button></form>{visibleTasks.length ? <div className="task-list">{visibleTasks.map(task => <article className={`task-row ${task.done ? 'task-done' : ''}`} key={task.id}><button className={`task-check ${task.done ? 'checked' : ''}`} aria-label={task.done ? `Reabrir ${task.title}` : `Completar ${task.title}`} aria-pressed={task.done} onClick={() => onToggle(task)}>{task.done && <Check size={15} />}</button><div className="task-copy"><strong>{task.title}</strong><span>{task.dueDate === dateKey(new Date()) ? 'Hoy' : new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(parseKey(task.dueDate))} · {task.dueTime || '09:00'}</span></div><a className="calendar-link" href={calendarLink(task)} target="_blank" rel="noreferrer" aria-label={`Crear evento de Google Calendar: ${task.title}`} title="Crear evento en Google Calendar"><CalendarDays size={16} /></a><button className="icon-action" aria-label={`Eliminar tarea ${task.title}`} onClick={() => onRemove(task)}><Trash2 size={15} /></button></article>)}</div> : <p className="empty-inline">No tienes tareas pendientes. Puedes dejar este espacio vacío.</p>}{compact && tasks.length > 4 && <p className="task-more">Y {tasks.length - 4} tareas más en Pendientes.</p>}<p className="calendar-note">El botón de calendario abre un evento preparado para guardar; la sincronización automática requiere conectar una cuenta de Google.</p></section>
+  return <section className={`tasks-panel ${compact ? 'compact' : ''}`}><div className="section-heading"><div><h2>{compact ? 'Tareas para hoy' : 'Pendientes'}</h2><p>{compact ? `${tasks.length} por hacer` : 'Organiza tus tareas y define cuándo quieres recordarlas.'}</p></div></div><form className="task-form" onSubmit={onAdd}><input className="habit-input" aria-label="Nueva tarea" placeholder="Ej. Llamar al dentista" maxLength={120} value={title} onChange={event => onTitle(event.target.value)} /><input className="habit-input task-date" type="date" aria-label="Fecha de la tarea" value={dueDate} onChange={event => onDueDate(event.target.value)} /><input className="habit-input task-time" type="time" aria-label="Hora de la tarea" value={dueTime} onChange={event => onDueTime(event.target.value)} /><button className="button-primary" type="submit" disabled={!title.trim()}><Plus size={16} /> Añadir</button></form>{visibleTasks.length ? <div className="task-list">{visibleTasks.map(task => <article className={`task-row ${task.done ? 'task-done' : ''}`} key={task.id}><button className={`task-check ${task.done ? 'checked' : ''}`} aria-label={task.done ? `Reabrir ${task.title}` : `Completar ${task.title}`} aria-pressed={task.done} onClick={() => onToggle(task)}>{task.done && <Check size={15} />}</button><div className="task-copy"><strong>{task.title}</strong><span>{task.dueDate === dateKey(new Date()) ? 'Hoy' : new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(parseKey(task.dueDate))} · {task.dueTime || '09:00'}</span></div>{task.googleEventUrl ? <a className="calendar-link calendar-saved" href={task.googleEventUrl} target="_blank" rel="noreferrer" aria-label={`Ver evento de Google Calendar: ${task.title}`} title="Ver evento en Google Calendar"><CalendarDays size={16} /></a> : calendarConfigured ? <button className="calendar-link" disabled={busyTaskIds.includes(task.id)} onClick={() => onAddToCalendar(task)} aria-label={`Añadir ${task.title} a Google Calendar`} title={calendarConnected ? 'Crear evento en Google Calendar' : 'Autorizar y crear evento en Google Calendar'}><CalendarDays size={16} /></button> : <a className="calendar-link" href={calendarLink(task)} target="_blank" rel="noreferrer" aria-label={`Abrir evento preparado para ${task.title}`} title="Abrir Google Calendar"><CalendarDays size={16} /></a>}<button className="icon-action" aria-label={`Eliminar tarea ${task.title}`} onClick={() => onRemove(task)}><Trash2 size={15} /></button></article>)}</div> : <p className="empty-inline">No tienes tareas pendientes. Puedes dejar este espacio vacío.</p>}{compact && tasks.length > 4 && <p className="task-more">Y {tasks.length - 4} tareas más en Pendientes.</p>}<p className="calendar-note">{calendarConfigured ? 'Al añadir el evento, se envían a Google el título y la fecha de esa tarea. Ritmo solicita permiso solo para crear eventos y muestra un aviso 10 minutos antes.' : 'Puedes abrir un evento preparado manualmente. Para crearlo directamente desde Ritmo, configura el cliente OAuth de Google Calendar en Pendientes.'}</p></section>
 }
 
 function HabitRow({ habit, index, date, today, onToggle, onEdit, onArchive }: { habit: Habit; index: number; date: Date; today: Date; onToggle: (habit: Habit, date: Date) => void; onEdit: (habit: Habit) => void; onArchive: (habit: Habit) => void }) {
